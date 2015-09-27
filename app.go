@@ -132,7 +132,7 @@ func authenticated(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-func getUser(w http.ResponseWriter, userID int) *User {
+func getUser(userID int) *User {
 	row := db.QueryRow(`SELECT * FROM users WHERE id = ?`, userID)
 	user := User{}
 	err := row.Scan(&user.ID, &user.AccountName, &user.NickName, &user.Email, new(string))
@@ -232,17 +232,17 @@ func getTemplatePath(file string) string {
 	return path.Join("templates", file)
 }
 
-func render(w http.ResponseWriter, r *http.Request, status int, file string, data interface{}) {
+var templates map[string]*template.Template
+
+func initTemplate(t string, fm template.FuncMap) {
+	tpl := template.Must(template.New(t).Funcs(fm).ParseFiles(getTemplatePath(t), getTemplatePath("header.html")))
+	templates[t] = tpl
+}
+
+func init() {
+	templates = make(map[string]*template.Template)
 	fmap := template.FuncMap{
-		"getUser": func(id int) *User {
-			return getUser(w, id)
-		},
-		"getCurrentUser": func() *User {
-			return getCurrentUser(w, r)
-		},
-		"isFriend": func(id int) bool {
-			return isFriend(w, r, id)
-		},
+		"getUser": getUser,
 		"prefectures": func() []string {
 			return prefs
 		},
@@ -275,7 +275,16 @@ func render(w http.ResponseWriter, r *http.Request, status int, file string, dat
 			return n
 		},
 	}
-	tpl := template.Must(template.New(file).Funcs(fmap).ParseFiles(getTemplatePath(file), getTemplatePath("header.html")))
+
+	templates_str := "entries.html entry.html error.html footprints.html friends.html index.html login.html profile.html"
+	templates := strings.Split(templates_str, " ")
+	for _, t := range templates {
+		initTemplate(t, fmap)
+	}
+}
+
+func render(w http.ResponseWriter, r *http.Request, status int, file string, data interface{}) {
+	tpl := templates[file]
 	w.WriteHeader(status)
 	checkErr(tpl.Execute(w, data))
 }
@@ -453,6 +462,7 @@ func GetProfile(w http.ResponseWriter, r *http.Request) {
 	if !authenticated(w, r) {
 		return
 	}
+	currentUser := getCurrentUser(w, r)
 
 	account := mux.Vars(r)["account_name"]
 	owner := getUserFromAccount(w, account)
@@ -486,12 +496,14 @@ func GetProfile(w http.ResponseWriter, r *http.Request) {
 	markFootprint(w, r, owner.ID)
 
 	render(w, r, http.StatusOK, "profile.html", struct {
-		Owner   User
-		Profile Profile
-		Entries []Entry
-		Private bool
+		Owner       *User
+		Profile     Profile
+		Entries     []Entry
+		Private     bool
+		CurrentUser *User
+		IsFriend    bool
 	}{
-		*owner, prof, entries, permitted(w, r, owner.ID),
+		owner, prof, entries, permitted(w, r, owner.ID), currentUser, isFriend(w, r, owner.ID),
 	})
 }
 
@@ -570,7 +582,7 @@ func GetEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	checkErr(err)
 	entry := Entry{id, userID, private == 1, strings.SplitN(body, "\n", 2)[0], strings.SplitN(body, "\n", 2)[1], createdAt}
-	owner := getUser(w, entry.UserID)
+	owner := getUser(entry.UserID)
 	if entry.Private {
 		if !permitted(w, r, owner.ID) {
 			checkErr(ErrPermissionDenied)
@@ -636,7 +648,7 @@ func PostComment(w http.ResponseWriter, r *http.Request) {
 	checkErr(err)
 
 	entry := Entry{id, userID, private == 1, strings.SplitN(body, "\n", 2)[0], strings.SplitN(body, "\n", 2)[1], createdAt}
-	owner := getUser(w, entry.UserID)
+	owner := getUser(entry.UserID)
 	if entry.Private {
 		if !permitted(w, r, owner.ID) {
 			checkErr(ErrPermissionDenied)
