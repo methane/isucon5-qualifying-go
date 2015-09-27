@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -21,8 +22,9 @@ import (
 )
 
 var (
-	db    *sql.DB
-	store *sessions.CookieStore
+	db     *sql.DB
+	store  *sessions.CookieStore
+	entryM sync.Mutex
 )
 
 type User struct {
@@ -52,11 +54,12 @@ type Entry struct {
 }
 
 type Comment struct {
-	ID        int
-	EntryID   int
-	UserID    int
-	Comment   string
-	CreatedAt time.Time
+	ID           int
+	EntryID      int
+	UserID       int
+	Comment      string
+	CreatedAt    time.Time
+	EntryOwnerID int
 }
 
 type Friend struct {
@@ -216,6 +219,9 @@ func myHandler(fn func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
 					}
 					msg = rcv.(error).Error()
 					http.Error(w, msg, http.StatusInternalServerError)
+					buf := make([]byte, 1024)
+					bl := runtime.Stack(buf, false)
+					os.Stderr.Write(buf[:bl])
 				}
 			}
 		}()
@@ -253,21 +259,6 @@ func init() {
 			return s
 		},
 		"split": strings.Split,
-		"getEntry": func(id int) Entry {
-			row := db.QueryRow(`SELECT * FROM entries WHERE id=?`, id)
-			var entryID, userID, private int
-			var body string
-			var createdAt time.Time
-			checkErr(row.Scan(&entryID, &userID, &private, &body, &createdAt))
-			return Entry{id, userID, private == 1, strings.SplitN(body, "\n", 2)[0], strings.SplitN(body, "\n", 2)[1], createdAt}
-		},
-		"getEntryLight": func(id int) Entry {
-			row := db.QueryRow(`SELECT id, user_id, private, created_at  FROM entries WHERE id=?`, id)
-			var entryID, userID, private int
-			var createdAt time.Time
-			checkErr(row.Scan(&entryID, &userID, &private, &createdAt))
-			return Entry{id, userID, private == 1, "", "", createdAt}
-		},
 		"numComments": func(id int) int {
 			row := db.QueryRow(`SELECT COUNT(*) AS c FROM comments WHERE entry_id = ?`, id)
 			var n int
@@ -384,17 +375,15 @@ LIMIT 10`, user.ID)
 		if !isFriend(w, r, c.UserID) {
 			continue
 		}
-		row := db.QueryRow(`SELECT * FROM entries WHERE id = ?`, c.EntryID)
-		var id, userID, private int
-		var body string
-		var createdAt time.Time
-		checkErr(row.Scan(&id, &userID, &private, &body, &createdAt))
-		entry := Entry{id, userID, private == 1, strings.SplitN(body, "\n", 2)[0], strings.SplitN(body, "\n", 2)[1], createdAt}
-		if entry.Private {
-			if !permitted(w, r, entry.UserID) {
+		row := db.QueryRow(`SELECT user_id, private FROM entries WHERE id = ?`, c.EntryID)
+		var userID, private int
+		checkErr(row.Scan(&userID, &private))
+		if private == 1 {
+			if !permitted(w, r, userID) {
 				continue
 			}
 		}
+		c.EntryOwnerID = userID
 		commentsOfFriends = append(commentsOfFriends, c)
 		if len(commentsOfFriends) >= 10 {
 			break
@@ -741,39 +730,22 @@ func GetInitialize(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	host := os.Getenv("ISUCON5_DB_HOST")
-	if host == "" {
-		host = "localhost"
-	}
-	portstr := os.Getenv("ISUCON5_DB_PORT")
-	if portstr == "" {
-		portstr = "3306"
-	}
-	port, err := strconv.Atoi(portstr)
-	if err != nil {
-		log.Fatalf("Failed to read DB port number from an environment variable ISUCON5_DB_PORT.\nError: %s", err.Error())
-	}
-	user := os.Getenv("ISUCON5_DB_USER")
-	if user == "" {
-		user = "root"
-	}
-	password := os.Getenv("ISUCON5_DB_PASSWORD")
-	dbname := os.Getenv("ISUCON5_DB_NAME")
-	if dbname == "" {
-		dbname = "isucon5q"
-	}
-	ssecret := os.Getenv("ISUCON5_SESSION_SECRET")
-	if ssecret == "" {
-		ssecret = "beermoris"
-	}
-
-	db, err = sql.Open("mysql", user+":"+password+"@tcp("+host+":"+strconv.Itoa(port)+")/"+dbname+"?loc=Local&parseTime=true&interpolateParams=true")
+	var err error
+	db, err = sql.Open("mysql", "root@unix(/var/run/mysqld/mysqld.sock)/isucon5q?loc=Local&parseTime=true&interpolateParams=true")
 	if err != nil {
 		log.Fatalf("Failed to connect to DB: %s.", err.Error())
+	}
+	err = db.Ping()
+	if err != nil {
+		log.Fatalf("Failed to connect to DB: %s.", err)
 	}
 	db.SetMaxIdleConns(50)
 	defer db.Close()
 
+	ssecret := os.Getenv("ISUCON5_SESSION_SECRET")
+	if ssecret == "" {
+		ssecret = "beermoris"
+	}
 	store = sessions.NewCookieStore([]byte(ssecret))
 
 	r := mux.NewRouter()
