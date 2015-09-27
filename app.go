@@ -11,13 +11,13 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/gorilla/context"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/sessions"
-	_ "github.com/youtube/vitess/go/cgzip"
 )
 
 var (
@@ -49,6 +49,66 @@ type Entry struct {
 	Title     string
 	Content   string
 	CreatedAt time.Time
+}
+
+type FriendRepo struct {
+	sync.Mutex
+	friend map[int]map[int]bool
+}
+
+var friendRepo = FriendRepo{friend: make(map[int]map[int]bool, 1024)}
+
+func (fr *FriendRepo) Reset() {
+	fr.Lock()
+	fr.friend = make(map[int]map[int]bool, 1024)
+	fr.Unlock()
+}
+
+func (fr *FriendRepo) Insert(a, b int) {
+	if a == b {
+		return
+	}
+	fr.Lock()
+	aa := fr.friend[a]
+	if aa == nil {
+		aa = make(map[int]bool)
+		fr.friend[a] = aa
+	}
+	aa[b] = true
+	bb := fr.friend[b]
+	if bb == nil {
+		bb = make(map[int]bool)
+		fr.friend[b] = bb
+	}
+	bb[a] = true
+	fr.Unlock()
+}
+
+func (fr *FriendRepo) IsFriend(a, b int) bool {
+	if a == b {
+		return true
+	}
+	fr.Lock()
+	defer fr.Unlock()
+	aa := fr.friend[a]
+	if aa == nil {
+		return false
+	}
+	return aa[b]
+}
+
+func (fr *FriendRepo) Init() {
+	fr.Reset()
+	rows, err := db.Query(`SELECT one, another FROM relations`)
+	if err != sql.ErrNoRows && err != nil {
+		panic(err)
+	}
+	for rows.Next() {
+		var a, b int
+		rows.Scan(&a, &b)
+		fr.Insert(a, b)
+	}
+	rows.Close()
 }
 
 /*
@@ -180,12 +240,13 @@ func getUserFromAccount(w http.ResponseWriter, name string) *User {
 
 func isFriend(w http.ResponseWriter, r *http.Request, anotherID int) bool {
 	session := getSession(w, r)
-	id := session.Values["user_id"]
-	row := db.QueryRow(`SELECT COUNT(1) AS cnt FROM relations WHERE (one = ? AND another = ?) OR (one = ? AND another = ?)`, id, anotherID, anotherID, id)
-	cnt := new(int)
-	err := row.Scan(cnt)
-	checkErr(err)
-	return *cnt > 0
+	id := session.Values["user_id"].(int)
+	return friendRepo.IsFriend(id, anotherID)
+	//row := db.QueryRow(`SELECT COUNT(1) AS cnt FROM relations WHERE (one = ? AND another = ?) OR (one = ? AND another = ?)`, id, anotherID, anotherID, id)
+	//cnt := new(int)
+	//err := row.Scan(cnt)
+	//checkErr(err)
+	//return *cnt > 0
 }
 
 func isFriendAccount(w http.ResponseWriter, r *http.Request, name string) bool {
@@ -736,6 +797,7 @@ func PostFriends(w http.ResponseWriter, r *http.Request) {
 		another := getUserFromAccount(w, anotherAccount)
 		_, err := db.Exec(`INSERT INTO relations (one, another) VALUES (?,?), (?,?)`, user.ID, another.ID, another.ID, user.ID)
 		checkErr(err)
+		friendRepo.Insert(user.ID, another.ID)
 		http.Redirect(w, r, "/friends", http.StatusSeeOther)
 	}
 }
@@ -745,7 +807,8 @@ func GetInitialize(w http.ResponseWriter, r *http.Request) {
 	db.Exec("DELETE FROM footprints WHERE id > 500000")
 	db.Exec("DELETE FROM entries2 WHERE id > 500000")
 	db.Exec("DELETE FROM comments WHERE id > 1500000")
-	db.Exec("SELECT title FROM entries2 ORDER BY id desc LIMIT 10000")
+	friendRepo.Init()
+	//db.Exec("SELECT title FROM entries2 ORDER BY id desc LIMIT 10000")
 }
 
 func main() {
@@ -760,6 +823,7 @@ func main() {
 	}
 	db.SetMaxIdleConns(50)
 	defer db.Close()
+	friendRepo.Init()
 
 	ssecret := os.Getenv("ISUCON5_SESSION_SECRET")
 	if ssecret == "" {
