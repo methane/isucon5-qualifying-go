@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"path"
 	"runtime"
@@ -141,6 +142,45 @@ type Comment struct {
 	Comment      string
 	CreatedAt    time.Time
 	EntryOwnerID int
+}
+
+type CommentCache struct {
+	sync.Mutex
+	Recent []Comment
+}
+
+var commentCache CommentCache
+
+func (cc *CommentCache) Init() {
+	cc.Lock()
+	defer cc.Unlock()
+	rows, _ := db.Query(`SELECT id, entry_id, user_id, comment, created_at, entry_user_id FROM comments ORDER BY created_at DESC LIMIT 1000`)
+	cc.Recent = make([]Comment, 0, 1000)
+	for rows.Next() {
+		c := Comment{}
+		checkErr(rows.Scan(&c.ID, &c.EntryID, &c.UserID, &c.Comment, &c.CreatedAt, &c.EntryOwnerID))
+		cc.Recent = append(cc.Recent, c)
+	}
+	for i := 0; i < len(cc.Recent)/2; i++ {
+		cc.Recent[i], cc.Recent[len(cc.Recent)-1-i] = cc.Recent[len(cc.Recent)-1-i], cc.Recent[i]
+
+	}
+	rows.Close()
+}
+
+func (cc *CommentCache) Insert(c Comment) {
+	cc.Lock()
+	defer cc.Unlock()
+	cc.Recent = append(cc.Recent, c)
+	if len(cc.Recent) > 1000 {
+		cc.Recent = cc.Recent[len(cc.Recent)-1000:]
+	}
+}
+
+func (cc *CommentCache) Get() []Comment {
+	cc.Lock()
+	defer cc.Unlock()
+	return cc.Recent
 }
 
 type Friend struct {
@@ -444,14 +484,17 @@ LIMIT 10`, user.ID)
 	}
 	rows.Close()
 
-	rows, err = db.Query(`SELECT id, entry_id, user_id, comment, created_at, entry_user_id FROM comments ORDER BY created_at DESC LIMIT 1000`)
-	if err != sql.ErrNoRows {
-		checkErr(err)
-	}
+	//rows, err = db.Query(`SELECT id, entry_id, user_id, comment, created_at, entry_user_id FROM comments ORDER BY created_at DESC LIMIT 1000`)
+	//if err != sql.ErrNoRows {
+	//	checkErr(err)
+	//}
 	commentsOfFriends := make([]Comment, 0, 10)
-	for rows.Next() {
-		c := Comment{}
-		checkErr(rows.Scan(&c.ID, &c.EntryID, &c.UserID, &c.Comment, &c.CreatedAt, &c.EntryOwnerID))
+	//for rows.Next() {
+	cc := commentCache.Get()
+	for i := len(cc) - 1; i >= 0; i-- {
+		c := cc[i]
+		// c := Comment{}
+		// checkErr(rows.Scan(&c.ID, &c.EntryID, &c.UserID, &c.Comment, &c.CreatedAt, &c.EntryOwnerID))
 		if !isFriend(w, r, c.UserID) {
 			continue
 		}
@@ -469,7 +512,7 @@ LIMIT 10`, user.ID)
 			break
 		}
 	}
-	rows.Close()
+	//rows.Close()
 
 	rows, err = db.Query(`SELECT * FROM relations WHERE one = ? OR another = ? ORDER BY created_at DESC`, user.ID, user.ID)
 	if err != sql.ErrNoRows {
@@ -723,8 +766,11 @@ func PostComment(w http.ResponseWriter, r *http.Request) {
 	}
 	user := getCurrentUser(w, r)
 
-	_, err = db.Exec(`INSERT INTO comments (entry_id, user_id, comment, entry_user_id) VALUES (?,?,?,?)`, entry.ID, user.ID, r.FormValue("comment"), entry.UserID)
+	result, err := db.Exec(`INSERT INTO comments (entry_id, user_id, comment, entry_user_id) VALUES (?,?,?,?)`, entry.ID, user.ID, r.FormValue("comment"), entry.UserID)
 	checkErr(err)
+	lastId, _ := result.LastInsertId()
+	c := Comment{ID: int(lastId), EntryID: entry.ID, UserID: user.ID, Comment: r.FormValue("comment"), CreatedAt: time.Now(), EntryOwnerID: entry.UserID}
+	commentCache.Insert(c)
 	http.Redirect(w, r, "/diary/entry/"+strconv.Itoa(entry.ID), http.StatusSeeOther)
 }
 
@@ -807,22 +853,31 @@ func GetInitialize(w http.ResponseWriter, r *http.Request) {
 	db.Exec("DELETE FROM entries2 WHERE id > 500000")
 	db.Exec("DELETE FROM comments WHERE id > 1500000")
 	friendRepo.Init()
+	commentCache.Init()
 	//db.Exec("SELECT title FROM entries2 ORDER BY id desc LIMIT 10000")
 }
 
 func main() {
 	var err error
-	db, err = sql.Open("mysql", "root@unix(/var/run/mysqld/mysqld.sock)/isucon5q?loc=Local&parseTime=true&interpolateParams=true")
-	if err != nil {
-		log.Fatalf("Failed to connect to DB: %s.", err.Error())
-	}
-	err = db.Ping()
-	if err != nil {
-		log.Fatalf("Failed to connect to DB: %s.", err)
+	for {
+		db, err = sql.Open("mysql", "root@unix(/var/run/mysqld/mysqld.sock)/isucon5q?loc=Local&parseTime=true&interpolateParams=true")
+		//db, err = sql.Open("mysql", "root@tcp(127.0.0.1:3306)/isucon5q?loc=Local&parseTime=true&interpolateParams=true")
+		if err != nil {
+			log.Println("Failed to open DB: %s.", err.Error())
+			time.Sleep(time.Second)
+			continue
+		}
+		err = db.Ping()
+		if err != nil {
+			log.Println("Failed to connect to DB: %s.", err)
+			db.Close()
+			time.Sleep(time.Second)
+			continue
+		}
+		break
 	}
 	db.SetMaxIdleConns(50)
 	defer db.Close()
-	friendRepo.Init()
 
 	ssecret := os.Getenv("ISUCON5_SESSION_SECRET")
 	if ssecret == "" {
@@ -856,6 +911,9 @@ func main() {
 	r.HandleFunc("/initialize", myHandler(GetInitialize))
 	r.HandleFunc("/", myHandler(GetIndex))
 	r.PathPrefix("/").Handler(http.FileServer(http.Dir("../static")))
+	friendRepo.Init()
+	commentCache.Init()
+	go http.ListenAndServe(":3000", nil)
 	log.Fatal(http.ListenAndServe(":8080", r))
 }
 
