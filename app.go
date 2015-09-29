@@ -9,7 +9,7 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"path"
-	"runtime"
+	//"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +32,60 @@ type User struct {
 	NickName    string
 	Email       string
 }
+
+type UserRepo struct {
+	sync.RWMutex
+	users     map[int]*User
+	byMail    map[string]*User
+	byAccount map[string]*User
+}
+
+func (r *UserRepo) Init() {
+	r.Lock()
+	defer r.Unlock()
+
+	r.users = make(map[int]*User, 1024)
+	r.byMail = make(map[string]*User, 1024)
+	r.byAccount = make(map[string]*User, 1024)
+	rows, err := db.Query(`SELECT id, account_name, nick_name, email FROM users`)
+	if err != nil && err != sql.ErrNoRows {
+		log.Fatal(err)
+	}
+	for rows.Next() {
+		var u User
+		err = rows.Scan(&u.ID, &u.AccountName, &u.NickName, &u.Email)
+		if err != nil {
+			log.Fatal(err)
+		}
+		r.users[u.ID] = &u
+		r.byMail[u.Email] = &u
+		r.byAccount[u.AccountName] = &u
+	}
+	rows.Close()
+}
+
+func (r *UserRepo) Get(id int) *User {
+	r.RLock()
+	u := r.users[id]
+	r.RUnlock()
+	return u
+}
+
+func (r *UserRepo) GetByMail(email string) *User {
+	r.RLock()
+	u := r.byMail[email]
+	r.RUnlock()
+	return u
+}
+
+func (r *UserRepo) GetByAccount(account string) *User {
+	r.RLock()
+	u := r.byAccount[account]
+	r.RUnlock()
+	return u
+}
+
+var userRepo = UserRepo{}
 
 type Profile struct {
 	UserID    int
@@ -201,50 +255,45 @@ var prefs = []string{"未入力",
 	"岡山県", "広島県", "山口県", "徳島県", "香川県", "愛媛県", "高知県", "福岡県", "佐賀県", "長崎県", "熊本県", "大分県", "宮崎県", "鹿児島県", "沖縄県"}
 
 var (
-	ErrAuthentication   = errors.New("Authentication error.")
-	ErrPermissionDenied = errors.New("Permission denied.")
-	ErrContentNotFound  = errors.New("Content not found.")
+	ErrContentNotFound = errors.New("Content not found.")
 )
 
+func authenticationFailed(w http.ResponseWriter, r *http.Request) {
+	session := getSession(w, r)
+	delete(session.Values, "user_id")
+	session.Save(r, w)
+	render(w, r, http.StatusUnauthorized, "login.html", struct{ Message string }{"ログインに失敗しました"})
+}
+
 func authenticate(w http.ResponseWriter, r *http.Request, email, passwd string) {
-	query := `SELECT u.id AS id, u.account_name AS account_name, u.nick_name AS nick_name, u.email AS email
-FROM users u
-JOIN salts s ON u.id = s.user_id
-WHERE u.email = ? AND u.passhash = SHA2(CONCAT(?, s.salt), 512)`
-	row := db.QueryRow(query, email, passwd)
-	user := User{}
-	err := row.Scan(&user.ID, &user.AccountName, &user.NickName, &user.Email)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			checkErr(ErrAuthentication)
-		}
-		checkErr(err)
+	u := userRepo.GetByMail(email)
+	if u == nil {
+		authenticationFailed(w, r)
+		return
 	}
 	session := getSession(w, r)
-	session.Values["user_id"] = user.ID
+	session.Values["user_id"] = u.ID
 	session.Save(r, w)
+}
+
+func permissionDenied(w http.ResponseWriter, r *http.Request) {
+	render(w, r, http.StatusForbidden, "error.html", struct{ Message string }{"友人のみしかアクセスできません"})
 }
 
 func getCurrentUser(w http.ResponseWriter, r *http.Request) *User {
 	u := context.Get(r, "user")
 	if u != nil {
-		user := u.(User)
-		return &user
+		user := u.(*User)
+		return user
 	}
 	session := getSession(w, r)
 	userID, ok := session.Values["user_id"]
 	if !ok || userID == nil {
 		return nil
 	}
-	row := db.QueryRow(`SELECT id, account_name, nick_name, email FROM users WHERE id=?`, userID)
-	user := User{}
-	err := row.Scan(&user.ID, &user.AccountName, &user.NickName, &user.Email)
-	if err == sql.ErrNoRows {
-		checkErr(ErrAuthentication)
-	}
-	checkErr(err)
+	user := userRepo.Get(userID.(int))
 	context.Set(r, "user", user)
-	return &user
+	return user
 }
 
 func authenticated(w http.ResponseWriter, r *http.Request) bool {
@@ -257,25 +306,11 @@ func authenticated(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func getUser(userID int) *User {
-	row := db.QueryRow(`SELECT * FROM users WHERE id = ?`, userID)
-	user := User{}
-	err := row.Scan(&user.ID, &user.AccountName, &user.NickName, &user.Email, new(string))
-	if err == sql.ErrNoRows {
-		checkErr(ErrContentNotFound)
-	}
-	checkErr(err)
-	return &user
+	return userRepo.Get(userID)
 }
 
 func getUserFromAccount(w http.ResponseWriter, name string) *User {
-	row := db.QueryRow(`SELECT * FROM users WHERE account_name = ?`, name)
-	user := User{}
-	err := row.Scan(&user.ID, &user.AccountName, &user.NickName, &user.Email, new(string))
-	if err == sql.ErrNoRows {
-		checkErr(ErrContentNotFound)
-	}
-	checkErr(err)
-	return &user
+	return userRepo.GetByAccount(name)
 }
 
 func isFriend(w http.ResponseWriter, r *http.Request, anotherID int) bool {
@@ -290,7 +325,7 @@ func isFriend(w http.ResponseWriter, r *http.Request, anotherID int) bool {
 }
 
 func isFriendAccount(w http.ResponseWriter, r *http.Request, name string) bool {
-	user := getUserFromAccount(w, name)
+	user := userRepo.GetByAccount(name)
 	if user == nil {
 		return false
 	}
@@ -314,41 +349,35 @@ func markFootprint(w http.ResponseWriter, r *http.Request, id int) {
 }
 
 func myHandler(fn func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			rcv := recover()
-			if rcv != nil {
-				switch {
-				case rcv == ErrAuthentication:
-					session := getSession(w, r)
-					delete(session.Values, "user_id")
-					session.Save(r, w)
-					render(w, r, http.StatusUnauthorized, "login.html", struct{ Message string }{"ログインに失敗しました"})
-					return
-				case rcv == ErrPermissionDenied:
-					render(w, r, http.StatusForbidden, "error.html", struct{ Message string }{"友人のみしかアクセスできません"})
-					return
-				case rcv == ErrContentNotFound:
-					render(w, r, http.StatusNotFound, "error.html", struct{ Message string }{"要求されたコンテンツは存在しません"})
-					return
-				default:
-					var msg string
-					if e, ok := rcv.(runtime.Error); ok {
-						msg = e.Error()
+	return http.HandlerFunc(fn)
+	/*
+		return func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				rcv := recover()
+				if rcv != nil {
+					switch {
+					case rcv == ErrContentNotFound:
+						render(w, r, http.StatusNotFound, "error.html", struct{ Message string }{"要求されたコンテンツは存在しません"})
+						return
+					default:
+						var msg string
+						if e, ok := rcv.(runtime.Error); ok {
+							msg = e.Error()
+						}
+						if s, ok := rcv.(string); ok {
+							msg = s
+						}
+						msg = rcv.(error).Error()
+						http.Error(w, msg, http.StatusInternalServerError)
+						buf := make([]byte, 1024)
+						bl := runtime.Stack(buf, false)
+						os.Stderr.Write(buf[:bl])
 					}
-					if s, ok := rcv.(string); ok {
-						msg = s
-					}
-					msg = rcv.(error).Error()
-					http.Error(w, msg, http.StatusInternalServerError)
-					buf := make([]byte, 1024)
-					bl := runtime.Stack(buf, false)
-					os.Stderr.Write(buf[:bl])
 				}
-			}
-		}()
-		fn(w, r)
-	}
+			}()
+			fn(w, r)
+		}
+	*/
 }
 
 func getSession(w http.ResponseWriter, r *http.Request) *sessions.Session {
@@ -626,7 +655,8 @@ func PostProfile(w http.ResponseWriter, r *http.Request) {
 	user := getCurrentUser(w, r)
 	account := mux.Vars(r)["account_name"]
 	if account != user.AccountName {
-		checkErr(ErrPermissionDenied)
+		permissionDenied(w, r)
+		return
 	}
 	query := `UPDATE profiles
 SET first_name=?, last_name=?, sex=?, birthday=?, pref=?, updated_at=CURRENT_TIMESTAMP()
@@ -697,7 +727,8 @@ func GetEntry(w http.ResponseWriter, r *http.Request) {
 	owner := getUser(entry.UserID)
 	if entry.Private {
 		if !permitted(w, r, owner.ID) {
-			checkErr(ErrPermissionDenied)
+			permissionDenied(w, r)
+			return
 		}
 	}
 	rows, err := db.Query(`SELECT id, entry_id, user_id, comment, created_at FROM comments WHERE entry_id = ?`, entry.ID)
@@ -761,7 +792,7 @@ func PostComment(w http.ResponseWriter, r *http.Request) {
 	owner := getUser(entry.UserID)
 	if entry.Private {
 		if !permitted(w, r, owner.ID) {
-			checkErr(ErrPermissionDenied)
+			permissionDenied(w, r)
 		}
 	}
 	user := getCurrentUser(w, r)
@@ -854,6 +885,7 @@ func GetInitialize(w http.ResponseWriter, r *http.Request) {
 	db.Exec("DELETE FROM comments WHERE id > 1500000")
 	friendRepo.Init()
 	commentCache.Init()
+	userRepo.Init()
 	//db.Exec("SELECT title FROM entries2 ORDER BY id desc LIMIT 10000")
 }
 
@@ -913,6 +945,7 @@ func main() {
 	r.PathPrefix("/").Handler(http.FileServer(http.Dir("../static")))
 	friendRepo.Init()
 	commentCache.Init()
+	userRepo.Init()
 	go http.ListenAndServe(":3000", nil)
 	log.Fatal(http.ListenAndServe(":8080", r))
 }
