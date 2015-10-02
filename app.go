@@ -445,25 +445,18 @@ LIMIT 10`, user.ID)
 	}
 	rows.Close()
 
-	rows, err = db.Query(`SELECT id, user_id, private, title, created_at FROM entries2 ORDER BY created_at DESC LIMIT 1000`)
-	if err != sql.ErrNoRows {
-		checkErr(err)
-	}
+	recentEntries := entryCache.Get()
 	entriesOfFriends := make([]Entry, 0, 10)
-	for rows.Next() {
-		var id, userID, private int
-		var title string
-		var createdAt time.Time
-		checkErr(rows.Scan(&id, &userID, &private, &title, &createdAt))
-		if !isFriend(w, r, userID) {
+	for i := len(recentEntries) - 1; i >= 0; i-- {
+		e := recentEntries[i]
+		if !isFriend(w, r, e.UserID) {
 			continue
 		}
-		entriesOfFriends = append(entriesOfFriends, Entry{id, userID, private == 1, title, "", createdAt})
+		entriesOfFriends = append(entriesOfFriends, e)
 		if len(entriesOfFriends) >= 10 {
 			break
 		}
 	}
-	rows.Close()
 
 	commentsOfFriends := make([]Comment, 0, 10)
 	cc := commentCache.Get()
@@ -805,6 +798,7 @@ func GetInitialize(w http.ResponseWriter, r *http.Request) {
 	commentCache.Init()
 	userRepo.Init()
 	footPrintCache.Reset()
+	entryCache.Init()
 	//db.Exec("SELECT title FROM entries2 ORDER BY id desc LIMIT 10000")
 }
 
@@ -865,6 +859,7 @@ func main() {
 	friendRepo.Init()
 	commentCache.Init()
 	userRepo.Init()
+	entryCache.Init()
 	go http.ListenAndServe(":3000", nil)
 	log.Fatal(http.ListenAndServe(":8080", r))
 }

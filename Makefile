@@ -1,4 +1,4 @@
-app: app.go footprints.go
+app: app.go footprints.go entrycache.go
 	GOOS=linux go build -o $@ $^
 
 send:
