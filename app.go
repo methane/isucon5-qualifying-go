@@ -241,13 +241,6 @@ type Friend struct {
 	CreatedAt time.Time
 }
 
-type Footprint struct {
-	UserID    int // 踏まれた人
-	OwnerID   int // 踏んだ人
-	CreatedAt time.Time
-	Updated   time.Time
-}
-
 var prefs = []string{"未入力",
 	"北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県", "茨城県", "栃木県", "群馬県", "埼玉県", "千葉県", "東京都", "神奈川県", "新潟県", "富山県",
 	"石川県", "福井県", "山梨県", "長野県", "岐阜県", "静岡県", "愛知県", "三重県", "滋賀県", "京都府", "大阪府", "兵庫県", "奈良県", "和歌山県", "鳥取県", "島根県",
@@ -494,7 +487,7 @@ LIMIT 10`, user.ID)
 		}
 	}
 
-	rows, err = db.Query(`SELECT * FROM relations WHERE one = ? ORDER BY created_at DESC`, user.ID, user.ID)
+	rows, err = db.Query(`SELECT * FROM relations WHERE one = ? ORDER BY created_at DESC`, user.ID)
 	if err != sql.ErrNoRows {
 		checkErr(err)
 	}
@@ -519,22 +512,7 @@ LIMIT 10`, user.ID)
 	}
 	rows.Close()
 
-	rows, err = db.Query(`SELECT user_id, owner_id, DATE(created_at) AS date, MAX(created_at) AS updated
-FROM footprints
-WHERE user_id = ?
-GROUP BY user_id, owner_id, DATE(created_at)
-ORDER BY updated DESC
-LIMIT 10`, user.ID)
-	if err != sql.ErrNoRows {
-		checkErr(err)
-	}
-	footprints := make([]Footprint, 0, 10)
-	for rows.Next() {
-		fp := Footprint{}
-		checkErr(rows.Scan(&fp.UserID, &fp.OwnerID, &fp.CreatedAt, &fp.Updated))
-		footprints = append(footprints, fp)
-	}
-	rows.Close()
+	footprints := footPrintCache.Get(user.ID)[:10]
 
 	render(w, r, http.StatusOK, "index.html", struct {
 		User              User
@@ -766,23 +744,8 @@ func GetFootprints(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user := getCurrentUser(w, r)
-	footprints := make([]Footprint, 0, 50)
-	rows, err := db.Query(`SELECT user_id, owner_id, DATE(created_at) AS date, MAX(created_at) as updated
-FROM footprints
-WHERE user_id = ?
-GROUP BY user_id, owner_id, DATE(created_at)
-ORDER BY updated DESC
-LIMIT 50`, user.ID)
-	if err != sql.ErrNoRows {
-		checkErr(err)
-	}
-	for rows.Next() {
-		fp := Footprint{}
-		checkErr(rows.Scan(&fp.UserID, &fp.OwnerID, &fp.CreatedAt, &fp.Updated))
-		footprints = append(footprints, fp)
-	}
-	rows.Close()
-	render(w, r, http.StatusOK, "footprints.html", struct{ Footprints []Footprint }{footprints})
+	footprints := footPrintCache.Get(user.ID)
+	render(w, r, http.StatusOK, "footprints.html", struct{ Footprints []Footprint }{footprints[:50]})
 }
 func GetFriends(w http.ResponseWriter, r *http.Request) {
 	if !authenticated(w, r) {
@@ -841,6 +804,7 @@ func GetInitialize(w http.ResponseWriter, r *http.Request) {
 	friendRepo.Init()
 	commentCache.Init()
 	userRepo.Init()
+	footPrintCache.Reset()
 	//db.Exec("SELECT title FROM entries2 ORDER BY id desc LIMIT 10000")
 }
 
