@@ -9,7 +9,6 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"path"
-	//"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -513,17 +512,10 @@ LIMIT 10`, user.ID)
 	}
 	rows.Close()
 
-	//rows, err = db.Query(`SELECT id, entry_id, user_id, comment, created_at, entry_user_id FROM comments ORDER BY created_at DESC LIMIT 1000`)
-	//if err != sql.ErrNoRows {
-	//	checkErr(err)
-	//}
 	commentsOfFriends := make([]Comment, 0, 10)
-	//for rows.Next() {
 	cc := commentCache.Get()
 	for i := len(cc) - 1; i >= 0; i-- {
 		c := cc[i]
-		// c := Comment{}
-		// checkErr(rows.Scan(&c.ID, &c.EntryID, &c.UserID, &c.Comment, &c.CreatedAt, &c.EntryOwnerID))
 		if !isFriend(w, r, c.UserID) {
 			continue
 		}
@@ -541,9 +533,8 @@ LIMIT 10`, user.ID)
 			break
 		}
 	}
-	//rows.Close()
 
-	rows, err = db.Query(`SELECT * FROM relations WHERE one = ? OR another = ? ORDER BY created_at DESC`, user.ID, user.ID)
+	rows, err = db.Query(`SELECT * FROM relations WHERE one = ? ORDER BY created_at DESC`, user.ID, user.ID)
 	if err != sql.ErrNoRows {
 		checkErr(err)
 	}
