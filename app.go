@@ -242,8 +242,8 @@ type Friend struct {
 }
 
 type Footprint struct {
-	UserID    int
-	OwnerID   int
+	UserID    int // 踏まれた人
+	OwnerID   int // 踏んだ人
 	CreatedAt time.Time
 	Updated   time.Time
 }
@@ -337,46 +337,6 @@ func permitted(w http.ResponseWriter, r *http.Request, anotherID int) bool {
 		return true
 	}
 	return isFriend(w, r, anotherID)
-}
-
-func markFootprint(w http.ResponseWriter, r *http.Request, id int) {
-	user := getCurrentUser(w, r)
-	if user.ID != id {
-		_, err := db.Exec(`INSERT INTO footprints (user_id,owner_id) VALUES (?,?)`, id, user.ID)
-		checkErr(err)
-	}
-}
-
-func myHandler(fn func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
-	return http.HandlerFunc(fn)
-	/*
-		return func(w http.ResponseWriter, r *http.Request) {
-			defer func() {
-				rcv := recover()
-				if rcv != nil {
-					switch {
-					case rcv == ErrContentNotFound:
-						render(w, r, http.StatusNotFound, "error.html", struct{ Message string }{"要求されたコンテンツは存在しません"})
-						return
-					default:
-						var msg string
-						if e, ok := rcv.(runtime.Error); ok {
-							msg = e.Error()
-						}
-						if s, ok := rcv.(string); ok {
-							msg = s
-						}
-						msg = rcv.(error).Error()
-						http.Error(w, msg, http.StatusInternalServerError)
-						buf := make([]byte, 1024)
-						bl := runtime.Stack(buf, false)
-						os.Stderr.Write(buf[:bl])
-					}
-				}
-			}()
-			fn(w, r)
-		}
-	*/
 }
 
 func getSession(w http.ResponseWriter, r *http.Request) *sessions.Session {
@@ -523,7 +483,7 @@ LIMIT 10`, user.ID)
 		var userID, private int
 		checkErr(row.Scan(&userID, &private))
 		if private == 1 {
-			if !permitted(w, r, userID) {
+			if !permitted(w, r, userID) { // TODO: w, r を myID に
 				continue
 			}
 		}
@@ -625,7 +585,7 @@ func GetProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	rows.Close()
 
-	markFootprint(w, r, owner.ID)
+	markFootprint(currentUser.ID, owner.ID)
 
 	render(w, r, http.StatusOK, "profile.html", struct {
 		Owner       *User
@@ -691,13 +651,14 @@ func ListEntries(w http.ResponseWriter, r *http.Request) {
 	}
 	rows.Close()
 
-	markFootprint(w, r, owner.ID)
+	currentUser := getCurrentUser(w, r)
+	markFootprint(currentUser.ID, owner.ID)
 
 	render(w, r, http.StatusOK, "entries.html", struct {
 		Owner   *User
 		Entries []Entry
 		Myself  bool
-	}{owner, entries, getCurrentUser(w, r).ID == owner.ID})
+	}{owner, entries, currentUser.ID == owner.ID})
 }
 
 func GetEntry(w http.ResponseWriter, r *http.Request) {
@@ -711,7 +672,8 @@ func GetEntry(w http.ResponseWriter, r *http.Request) {
 	var createdAt time.Time
 	err := row.Scan(&id, &userID, &private, &title, &body, &createdAt)
 	if err == sql.ErrNoRows {
-		checkErr(ErrContentNotFound)
+		render(w, r, http.StatusNotFound, "error.html", struct{ Message string }{"要求されたコンテンツは存在しません"})
+		return
 	}
 	checkErr(err)
 	entry := Entry{id, userID, private == 1, title, body, createdAt}
@@ -734,7 +696,8 @@ func GetEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	rows.Close()
 
-	markFootprint(w, r, owner.ID)
+	currentUser := getCurrentUser(w, r)
+	markFootprint(currentUser.ID, owner.ID)
 
 	render(w, r, http.StatusOK, "entry.html", struct {
 		Owner    *User
@@ -775,7 +738,8 @@ func PostComment(w http.ResponseWriter, r *http.Request) {
 	var id, userID, private int
 	err := row.Scan(&id, &userID, &private)
 	if err == sql.ErrNoRows {
-		checkErr(ErrContentNotFound)
+		render(w, r, http.StatusNotFound, "error.html", struct{ Message string }{"要求されたコンテンツは存在しません"})
+		return
 	}
 	checkErr(err)
 
@@ -911,28 +875,28 @@ func main() {
 	r := mux.NewRouter()
 
 	l := r.Path("/login").Subrouter()
-	l.Methods("GET").HandlerFunc(myHandler(GetLogin))
-	l.Methods("POST").HandlerFunc(myHandler(PostLogin))
-	r.Path("/logout").Methods("GET").HandlerFunc(myHandler(GetLogout))
+	l.Methods("GET").HandlerFunc(http.HandlerFunc(GetLogin))
+	l.Methods("POST").HandlerFunc(http.HandlerFunc(PostLogin))
+	r.Path("/logout").Methods("GET").HandlerFunc(http.HandlerFunc(GetLogout))
 
 	p := r.Path("/profile/{account_name}").Subrouter()
-	p.Methods("GET").HandlerFunc(myHandler(GetProfile))
-	p.Methods("POST").HandlerFunc(myHandler(PostProfile))
+	p.Methods("GET").HandlerFunc(http.HandlerFunc(GetProfile))
+	p.Methods("POST").HandlerFunc(http.HandlerFunc(PostProfile))
 
 	d := r.PathPrefix("/diary").Subrouter()
-	d.HandleFunc("/entries/{account_name}", myHandler(ListEntries)).Methods("GET")
-	d.HandleFunc("/entry", myHandler(PostEntry)).Methods("POST")
-	d.HandleFunc("/entry/{entry_id}", myHandler(GetEntry)).Methods("GET")
+	d.HandleFunc("/entries/{account_name}", http.HandlerFunc(ListEntries)).Methods("GET")
+	d.HandleFunc("/entry", http.HandlerFunc(PostEntry)).Methods("POST")
+	d.HandleFunc("/entry/{entry_id}", http.HandlerFunc(GetEntry)).Methods("GET")
 
-	d.HandleFunc("/comment/{entry_id}", myHandler(PostComment)).Methods("POST")
+	d.HandleFunc("/comment/{entry_id}", http.HandlerFunc(PostComment)).Methods("POST")
 
-	r.HandleFunc("/footprints", myHandler(GetFootprints)).Methods("GET")
+	r.HandleFunc("/footprints", http.HandlerFunc(GetFootprints)).Methods("GET")
 
-	r.HandleFunc("/friends", myHandler(GetFriends)).Methods("GET")
-	r.HandleFunc("/friends/{account_name}", myHandler(PostFriends)).Methods("POST")
+	r.HandleFunc("/friends", http.HandlerFunc(GetFriends)).Methods("GET")
+	r.HandleFunc("/friends/{account_name}", http.HandlerFunc(PostFriends)).Methods("POST")
 
-	r.HandleFunc("/initialize", myHandler(GetInitialize))
-	r.HandleFunc("/", myHandler(GetIndex))
+	r.HandleFunc("/initialize", http.HandlerFunc(GetInitialize))
+	r.HandleFunc("/", http.HandlerFunc(GetIndex))
 	r.PathPrefix("/").Handler(http.FileServer(http.Dir("../static")))
 	friendRepo.Init()
 	commentCache.Init()
