@@ -46,7 +46,8 @@ func (c *FoopprintCache) Invalidate(userID int) {
 
 func markFootprint(visitor, id int) {
 	if visitor != id {
-		_, err := db.Exec(`INSERT INTO footprints (user_id,owner_id) VALUES (?,?)`, id, visitor)
+		now := time.Now()
+		_, err := db.Exec(`replace INTO footprints (user_id,owner_id,date,created_at) VALUES (?,?,?,?)`, id, visitor, now, now)
 		if err != nil {
 			panic(err)
 		}
@@ -55,11 +56,10 @@ func markFootprint(visitor, id int) {
 }
 
 func fetchFootprint(userID, limit int) []Footprint {
-	rows, err := db.Query(`SELECT user_id, owner_id, DATE(created_at) AS date, MAX(created_at) AS updated
+	rows, err := db.Query(`SELECT user_id, owner_id, date, created_at
 FROM footprints
 WHERE user_id = ?
-GROUP BY user_id, owner_id, DATE(created_at)
-ORDER BY updated DESC
+ORDER BY created_at DESC
 LIMIT ?`, userID, limit)
 	if err != sql.ErrNoRows {
 		checkErr(err)
