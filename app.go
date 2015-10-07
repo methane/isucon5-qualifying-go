@@ -192,6 +192,7 @@ type Comment struct {
 	Comment      string
 	CreatedAt    time.Time
 	EntryOwnerID int
+	private      bool
 }
 
 type CommentCache struct {
@@ -204,16 +205,20 @@ var commentCache CommentCache
 func (cc *CommentCache) Init() {
 	cc.Lock()
 	defer cc.Unlock()
-	rows, _ := db.Query(`SELECT id, entry_id, user_id, comment, created_at, entry_user_id FROM comments ORDER BY created_at DESC LIMIT 1000`)
+	rows, err := db.Query(`SELECT c.id, entry_id, c.user_id, comment, c.created_at, e.user_id, e.private
+FROM comments as c LEFT JOIN entries2 as e ON (entry_id=e.id) ORDER BY c.created_at DESC LIMIT 1000`)
+	if err != nil {
+		panic(err)
+	}
+
 	cc.Recent = make([]Comment, 0, 1000)
 	for rows.Next() {
 		c := Comment{}
-		checkErr(rows.Scan(&c.ID, &c.EntryID, &c.UserID, &c.Comment, &c.CreatedAt, &c.EntryOwnerID))
+		checkErr(rows.Scan(&c.ID, &c.EntryID, &c.UserID, &c.Comment, &c.CreatedAt, &c.EntryOwnerID, &c.private))
 		cc.Recent = append(cc.Recent, c)
 	}
 	for i := 0; i < len(cc.Recent)/2; i++ {
 		cc.Recent[i], cc.Recent[len(cc.Recent)-1-i] = cc.Recent[len(cc.Recent)-1-i], cc.Recent[i]
-
 	}
 	rows.Close()
 }
@@ -317,6 +322,12 @@ func permitted(w http.ResponseWriter, r *http.Request, anotherID int) bool {
 		return true
 	}
 	return isFriend(w, r, anotherID)
+}
+func permitted2(myID, anotherID int) bool {
+	if myID == anotherID {
+		return true
+	}
+	return friendRepo.IsFriend(myID, anotherID)
 }
 
 func getSession(w http.ResponseWriter, r *http.Request) *sessions.Session {
@@ -430,7 +441,7 @@ LIMIT 10`, user.ID)
 	entriesOfFriends := make([]Entry, 0, 10)
 	for i := len(recentEntries) - 1; i >= 0; i-- {
 		e := recentEntries[i]
-		if !isFriend(w, r, e.UserID) {
+		if !friendRepo.IsFriend(user.ID, e.UserID) {
 			continue
 		}
 		entriesOfFriends = append(entriesOfFriends, e)
@@ -443,18 +454,14 @@ LIMIT 10`, user.ID)
 	cc := commentCache.Get()
 	for i := len(cc) - 1; i >= 0; i-- {
 		c := cc[i]
-		if !isFriend(w, r, c.UserID) {
+		if !friendRepo.IsFriend(user.ID, c.UserID) {
 			continue
 		}
-		row := db.QueryRow(`SELECT user_id, private FROM entries2 WHERE id = ?`, c.EntryID)
-		var userID, private int
-		checkErr(row.Scan(&userID, &private))
-		if private == 1 {
-			if !permitted(w, r, userID) { // TODO: w, r を myID に
+		if c.private {
+			if !permitted2(user.ID, c.EntryOwnerID) {
 				continue
 			}
 		}
-		c.EntryOwnerID = userID
 		commentsOfFriends = append(commentsOfFriends, c)
 		if len(commentsOfFriends) >= 10 {
 			break
@@ -492,7 +499,7 @@ func GetProfile(w http.ResponseWriter, r *http.Request) {
 		checkErr(err)
 	}
 	var query string
-	if permitted(w, r, owner.ID) {
+	if permitted2(currentUser.ID, owner.ID) {
 		query = `SELECT * FROM entries2 WHERE user_id = ? ORDER BY created_at LIMIT 5`
 	} else {
 		query = `SELECT * FROM entries2 WHERE user_id = ? AND private=0 ORDER BY created_at LIMIT 5`
@@ -522,7 +529,7 @@ func GetProfile(w http.ResponseWriter, r *http.Request) {
 		CurrentUser *User
 		IsFriend    bool
 	}{
-		owner, prof, entries, permitted(w, r, owner.ID), currentUser, isFriend(w, r, owner.ID),
+		owner, prof, entries, permitted2(currentUser.ID, owner.ID), currentUser, isFriend(w, r, owner.ID),
 	})
 }
 
@@ -554,12 +561,13 @@ func ListEntries(w http.ResponseWriter, r *http.Request) {
 	if !authenticated(w, r) {
 		return
 	}
+	myID := getCurrentUser(w, r).ID
 
 	account := mux.Vars(r)["account_name"]
 	owner := getUserFromAccount(w, account)
 	var query string
 	const select_expr = `SELECT id, user_id, private, title, body, created_at, (select count(*) FROM comments WHERE entry_id=entries2.id) FROM entries2 `
-	if permitted(w, r, owner.ID) {
+	if permitted2(myID, owner.ID) {
 		query = select_expr + `WHERE user_id = ? ORDER BY created_at DESC LIMIT 20`
 	} else {
 		query = select_expr + `WHERE user_id = ? AND private=0 ORDER BY created_at DESC LIMIT 20`
@@ -684,7 +692,7 @@ func PostComment(w http.ResponseWriter, r *http.Request) {
 	result, err := db.Exec(`INSERT INTO comments (entry_id, user_id, comment, entry_user_id) VALUES (?,?,?,?)`, entry.ID, user.ID, r.FormValue("comment"), entry.UserID)
 	checkErr(err)
 	lastId, _ := result.LastInsertId()
-	c := Comment{ID: int(lastId), EntryID: entry.ID, UserID: user.ID, Comment: r.FormValue("comment"), CreatedAt: time.Now(), EntryOwnerID: entry.UserID}
+	c := Comment{ID: int(lastId), EntryID: entry.ID, UserID: user.ID, Comment: r.FormValue("comment"), CreatedAt: time.Now(), EntryOwnerID: entry.UserID, private: entry.Private}
 	commentCache.Insert(c)
 	http.Redirect(w, r, "/diary/entry/"+strconv.Itoa(entry.ID), http.StatusSeeOther)
 }
