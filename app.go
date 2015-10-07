@@ -109,6 +109,11 @@ type Entry struct {
 	NumComments int
 }
 
+type Friend struct {
+	ID        int
+	CreatedAt time.Time
+}
+
 type FriendRepo struct {
 	sync.Mutex
 	friend map[int]map[int]bool
@@ -153,6 +158,17 @@ func (fr *FriendRepo) IsFriend(a, b int) bool {
 		return false
 	}
 	return aa[b]
+}
+
+func (fr *FriendRepo) Count(userID int) int {
+	fr.Lock()
+	c := 0
+	m := fr.friend[userID]
+	if m != nil {
+		c = len(m)
+	}
+	fr.Unlock()
+	return c
 }
 
 func (fr *FriendRepo) Init() {
@@ -215,11 +231,6 @@ func (cc *CommentCache) Get() []Comment {
 	cc.Lock()
 	defer cc.Unlock()
 	return cc.Recent
-}
-
-type Friend struct {
-	ID        int
-	CreatedAt time.Time
 }
 
 var prefs = []string{"未入力",
@@ -450,31 +461,6 @@ LIMIT 10`, user.ID)
 		}
 	}
 
-	rows, err = db.Query(`SELECT * FROM relations WHERE one = ? ORDER BY created_at DESC`, user.ID)
-	if err != sql.ErrNoRows {
-		checkErr(err)
-	}
-	friendsMap := make(map[int]time.Time)
-	for rows.Next() {
-		var id, one, another int
-		var createdAt time.Time
-		checkErr(rows.Scan(&id, &one, &another, &createdAt))
-		var friendID int
-		if one == user.ID {
-			friendID = another
-		} else {
-			friendID = one
-		}
-		if _, ok := friendsMap[friendID]; !ok {
-			friendsMap[friendID] = createdAt
-		}
-	}
-	friends := make([]Friend, 0, len(friendsMap))
-	for key, val := range friendsMap {
-		friends = append(friends, Friend{key, val})
-	}
-	rows.Close()
-
 	footprints := footPrintCache.Get(user.ID)[:10]
 
 	render(w, r, http.StatusOK, "index.html", struct {
@@ -484,10 +470,10 @@ LIMIT 10`, user.ID)
 		CommentsForMe     []Comment
 		EntriesOfFriends  []Entry
 		CommentsOfFriends []Comment
-		Friends           []Friend
+		NumFriends        int
 		Footprints        []Footprint
 	}{
-		*user, prof, entries, commentsForMe, entriesOfFriends, commentsOfFriends, friends, footprints,
+		*user, prof, entries, commentsForMe, entriesOfFriends, commentsOfFriends, friendRepo.Count(user.ID), footprints,
 	})
 }
 
