@@ -3,3 +3,4 @@ app: app.go footprints.go entrycache.go
 
 send:
 	scp -C app isucon:webapp/go/app2
+	rsync -avK templates/ isucon:webapp/go/templates/

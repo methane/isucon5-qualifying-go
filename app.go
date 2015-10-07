@@ -100,12 +100,13 @@ type Profile struct {
 }
 
 type Entry struct {
-	ID        int
-	UserID    int
-	Private   bool
-	Title     string
-	Content   string
-	CreatedAt time.Time
+	ID          int
+	UserID      int
+	Private     bool
+	Title       string
+	Content     string
+	CreatedAt   time.Time
+	NumComments int
 }
 
 type FriendRepo struct {
@@ -168,29 +169,6 @@ func (fr *FriendRepo) Init() {
 	rows.Close()
 }
 
-/*
-type EntryRepo struct {
-	sync.RWMutex
-	entries map[int]Entry
-}
-
-var repo = EntryRepo{entries: make(map[int]Entry, 1024)}
-
-func (r *EntryRepo) GetEntry(id int) Entry {
-	r.RLock()
-	ent, ok := r.entries[id]
-	r.RUnlock()
-	if ok {
-		return ent
-	}
-	r.Lock()
-	ent, ok := r.entries[id]
-	if ok {
-		return ent
-	}
-	r.Unlock()
-}
-*/
 type Comment struct {
 	ID           int
 	EntryID      int
@@ -360,12 +338,6 @@ func init() {
 			return s
 		},
 		"split": strings.Split,
-		"numComments": func(id int) int {
-			row := db.QueryRow(`SELECT COUNT(*) AS c FROM comments WHERE entry_id = ?`, id)
-			var n int
-			checkErr(row.Scan(&n))
-			return n
-		},
 	}
 
 	templates_str := "entries.html entry.html error.html footprints.html friends.html index.html login.html profile.html"
@@ -549,7 +521,7 @@ func GetProfile(w http.ResponseWriter, r *http.Request) {
 		var title, body string
 		var createdAt time.Time
 		checkErr(rows.Scan(&id, &userID, &private, &title, &body, &createdAt))
-		entry := Entry{id, userID, private == 1, title, body, createdAt}
+		entry := Entry{id, userID, private == 1, title, body, createdAt, 0}
 		entries = append(entries, entry)
 	}
 	rows.Close()
@@ -600,10 +572,11 @@ func ListEntries(w http.ResponseWriter, r *http.Request) {
 	account := mux.Vars(r)["account_name"]
 	owner := getUserFromAccount(w, account)
 	var query string
+	const select_expr = `SELECT id, user_id, private, title, body, created_at, (select count(*) FROM comments WHERE entry_id=entries2.id) FROM entries2 `
 	if permitted(w, r, owner.ID) {
-		query = `SELECT * FROM entries2 WHERE user_id = ? ORDER BY created_at DESC LIMIT 20`
+		query = select_expr + `WHERE user_id = ? ORDER BY created_at DESC LIMIT 20`
 	} else {
-		query = `SELECT * FROM entries2 WHERE user_id = ? AND private=0 ORDER BY created_at DESC LIMIT 20`
+		query = select_expr + `WHERE user_id = ? AND private=0 ORDER BY created_at DESC LIMIT 20`
 	}
 	rows, err := db.Query(query, owner.ID)
 	if err != sql.ErrNoRows {
@@ -614,8 +587,9 @@ func ListEntries(w http.ResponseWriter, r *http.Request) {
 		var id, userID, private int
 		var title, body string
 		var createdAt time.Time
-		checkErr(rows.Scan(&id, &userID, &private, &title, &body, &createdAt))
-		entry := Entry{id, userID, private == 1, title, body, createdAt}
+		var nc int
+		checkErr(rows.Scan(&id, &userID, &private, &title, &body, &createdAt, &nc))
+		entry := Entry{id, userID, private == 1, title, body, createdAt, nc}
 		entries = append(entries, entry)
 	}
 	rows.Close()
@@ -645,7 +619,7 @@ func GetEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	checkErr(err)
-	entry := Entry{id, userID, private == 1, title, body, createdAt}
+	entry := Entry{id, userID, private == 1, title, body, createdAt, 0}
 	owner := getUser(entry.UserID)
 	if entry.Private {
 		if !permitted(w, r, owner.ID) {
@@ -860,6 +834,7 @@ func main() {
 	entryCache.Init()
 	go http.ListenAndServe(":3000", nil)
 	go http.ListenAndServe(":8080", r)
+	os.Remove(UnixPath)
 	ul, err := net.Listen("unix", UnixPath)
 	if err != nil {
 		panic(err)

@@ -34,7 +34,7 @@
         </div>
         {{ if .Private }}<div class="text-danger entry-private">範囲: 友だち限定公開</div>{{ end }}
         <div class="entry-created-at">更新日時: {{ .CreatedAt.Format "2006-01-02 15:04:05" }}</div>
-        <div class="entry-comments">コメント: {{ numComments .ID }}件</div>
+        <div class="entry-comments">コメント: {{ .NumComments }}件</div>
     </div>
     {{ end }}
 </div>

@@ -10,7 +10,7 @@ type Footprint struct {
 	UserID    int // 踏まれた人
 	OwnerID   int // 踏んだ人
 	CreatedAt time.Time
-	Updated   time.Time
+	UpdatedAt time.Time
 }
 
 type FoopprintCache struct {
@@ -68,7 +68,7 @@ LIMIT ?`, userID, limit)
 	footprints := make([]Footprint, 0, 10)
 	for rows.Next() {
 		fp := Footprint{}
-		checkErr(rows.Scan(&fp.UserID, &fp.OwnerID, &fp.CreatedAt, &fp.Updated))
+		checkErr(rows.Scan(&fp.UserID, &fp.OwnerID, &fp.CreatedAt, &fp.UpdatedAt))
 		footprints = append(footprints, fp)
 	}
 	return footprints
