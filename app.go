@@ -5,6 +5,7 @@ import (
 	"errors"
 	"html/template"
 	"log"
+	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -19,6 +20,8 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/gorilla/sessions"
 )
+
+const UnixPath = "/tmp/isuxi-app.sock"
 
 var (
 	db    *sql.DB
@@ -309,11 +312,6 @@ func isFriend(w http.ResponseWriter, r *http.Request, anotherID int) bool {
 	session := getSession(w, r)
 	id := session.Values["user_id"].(int)
 	return friendRepo.IsFriend(id, anotherID)
-	//row := db.QueryRow(`SELECT COUNT(1) AS cnt FROM relations WHERE (one = ? AND another = ?) OR (one = ? AND another = ?)`, id, anotherID, anotherID, id)
-	//cnt := new(int)
-	//err := row.Scan(cnt)
-	//checkErr(err)
-	//return *cnt > 0
 }
 
 func isFriendAccount(w http.ResponseWriter, r *http.Request, name string) bool {
@@ -861,7 +859,14 @@ func main() {
 	userRepo.Init()
 	entryCache.Init()
 	go http.ListenAndServe(":3000", nil)
-	log.Fatal(http.ListenAndServe(":8080", r))
+	go http.ListenAndServe(":8080", r)
+	ul, err := net.Listen("unix", UnixPath)
+	if err != nil {
+		panic(err)
+	}
+	os.Chmod(UnixPath, 0777)
+	defer ul.Close()
+	log.Fatal(http.Serve(ul, r))
 }
 
 func checkErr(err error) {
