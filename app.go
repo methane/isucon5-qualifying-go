@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"errors"
+	"fmt"
 	"html/template"
 	"log"
 	"net"
@@ -475,12 +477,12 @@ LIMIT 10`, user.ID)
 		Profile           Profile
 		Entries           []Entry
 		CommentsForMe     []Comment
-		EntriesOfFriends  []Entry
+		FriendEntries     template.HTML
 		CommentsOfFriends []Comment
 		NumFriends        int
 		Footprints        []Footprint
 	}{
-		*user, prof, entries, commentsForMe, entriesOfFriends, commentsOfFriends, friendRepo.Count(user.ID), footprints,
+		*user, prof, entries, commentsForMe, renderFriendEntries(entriesOfFriends), commentsOfFriends, friendRepo.Count(user.ID), footprints,
 	})
 }
 
@@ -710,9 +712,8 @@ func GetFriends(w http.ResponseWriter, r *http.Request) {
 	if !authenticated(w, r) {
 		return
 	}
-
 	user := getCurrentUser(w, r)
-	rows, err := db.Query(`SELECT * FROM relations WHERE one = ? OR another = ? ORDER BY created_at DESC`, user.ID, user.ID)
+	rows, err := db.Query(`SELECT * FROM relations WHERE one = ? ORDER BY created_at DESC`, user.ID)
 	if err != sql.ErrNoRows {
 		checkErr(err)
 	}
@@ -842,4 +843,36 @@ func checkErr(err error) {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func renderFriendEntries(es []Entry) template.HTML {
+	const t1 = `
+  <div class="col-md-4">
+    <div>あなたの友だちの日記エントリ</div>
+    <div id="friend-entries">`
+	const tx = `</div></div>`
+
+	buff := &bytes.Buffer{}
+	buff.WriteString(t1)
+	for _, e := range es {
+		//{{ range .EntriesOfFriends }}
+		const t2 = `<div class="friend-entry">
+<ul class="list-group">
+`
+		buff.WriteString(t2)
+		//    {{ $entryOwner := getUser .UserID }}
+		owner := getUser(e.UserID)
+		fmt.Fprintf(buff, `
+    <li class="list-group-item entry-owner"><a href="/diary/entries/%s">%sさん</a>:</li>
+    <li class="list-group-item entry-title"><a href="/diary/entry/%v">%s</a></li>
+    <li class="list-group-item entry-created-at">投稿時刻:%s</li>
+		  </ul>
+		</div>
+`, owner.AccountName, owner.NickName,
+			e.ID, template.HTMLEscapeString(e.Title),
+			e.CreatedAt.Format("2006-01-02 15:04:05"))
+		//{{ end }}
+	}
+	buff.WriteString(tx)
+	return template.HTML(buff.String())
 }

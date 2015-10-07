@@ -59,21 +59,7 @@
     </div>
   </div>
 
-  <div class="col-md-4">
-    <div>あなたの友だちの日記エントリ</div>
-    <div id="friend-entries">
-      {{ range .EntriesOfFriends }}
-      <div class="friend-entry">
-        <ul class="list-group">
-          {{ $entryOwner := getUser .UserID }}
-          <li class="list-group-item entry-owner"><a href="/diary/entries/{{ $entryOwner.AccountName }}">{{ $entryOwner.NickName }}さん</a>:</li>
-          <li class="list-group-item entry-title"><a href="/diary/entry/{{ .ID }}">{{ .Title }}</a></li>
-          <li class="list-group-item entry-created-at">投稿時刻:{{ .CreatedAt.Format "2006-01-02 15:04:05" }}</li>
-        </ul>
-      </div>
-      {{ end }}
-    </div>
-  </div>
+  {{ .FriendEntries }}
 
   <div class="col-md-4">
     <div>あなたの友だちのコメント</div>
