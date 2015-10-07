@@ -46,7 +46,8 @@ func (c *FoopprintCache) Invalidate(userID int) {
 
 func markFootprint(visitor, id int) {
 	if visitor != id {
-		_, err := db.Exec(`INSERT INTO footprints (user_id,owner_id) VALUES (?,?)`, id, visitor)
+		now := time.Now()
+		_, err := db.Exec(`replace INTO footprints (user_id,owner_id,date,created_at) VALUES (?,?,?,?)`, id, visitor, now, now)
 		if err != nil {
 			panic(err)
 		}
