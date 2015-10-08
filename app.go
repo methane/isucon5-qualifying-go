@@ -478,11 +478,12 @@ LIMIT 10`, user.ID)
 		Entries           []Entry
 		CommentsForMe     []Comment
 		FriendEntries     template.HTML
-		CommentsOfFriends []Comment
+		CommentsOfFriends template.HTML
 		NumFriends        int
 		Footprints        []Footprint
 	}{
-		*user, prof, entries, commentsForMe, renderFriendEntries(entriesOfFriends), commentsOfFriends, friendRepo.Count(user.ID), footprints,
+		*user, prof, entries, commentsForMe, renderFriendEntries(entriesOfFriends),
+		renderCommentsOfFriends(commentsOfFriends), friendRepo.Count(user.ID), footprints,
 	})
 }
 
@@ -875,4 +876,32 @@ func renderFriendEntries(es []Entry) template.HTML {
 	}
 	buff.WriteString(tx)
 	return template.HTML(buff.String())
+}
+
+func renderCommentsOfFriends(comments []Comment) template.HTML {
+	buf := &bytes.Buffer{}
+	buf.WriteString(`
+  <div class="col-md-4">
+    <div>あなたの友だちのコメント</div>
+    <div id="friend-comments">`)
+
+	for _, c := range comments {
+		cowner := getUser(c.UserID)
+		eowner := getUser(c.EntryOwnerID)
+		comment := c.Comment
+		if len(comment) > 30 {
+			comment = comment[:27] + "..."
+		}
+		fmt.Fprintf(buf, `
+      <div class="friend-comment">
+        <ul class="list-group">
+          <li class="list-group-item comment-from-to"><a href="/profile/%s">%sさん</a>から<a href="/profile/%s">%sさん</a>へのコメント:</li>
+          <li class="list-group-item comment-comment">%s</li>
+          <li class="list-group-item comment-created-at">投稿時刻:%s</li>
+        </ul>
+      </div>`, cowner.AccountName, template.HTMLEscapeString(cowner.NickName), eowner.AccountName, template.HTMLEscapeString(eowner.NickName),
+			template.HTMLEscapeString(comment), c.CreatedAt.Format("2006-01-02 15:04:05"))
+	}
+	buf.WriteString(`</div></div>`)
+	return template.HTML(buf.String())
 }
