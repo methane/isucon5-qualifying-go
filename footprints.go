@@ -7,10 +7,10 @@ import (
 )
 
 type Footprint struct {
-	UserID    int // 踏まれた人
-	OwnerID   int // 踏んだ人
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	UserID    int       // 踏まれた人
+	OwnerID   int       // 踏んだ人
+	CreatedAt time.Time // date
+	UpdatedAt time.Time // time
 }
 
 type FoopprintCache struct {

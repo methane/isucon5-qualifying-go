@@ -40,8 +40,8 @@ type User struct {
 type UserRepo struct {
 	sync.RWMutex
 	users     map[int]*User
-	byMail    map[string]*User
-	byAccount map[string]*User
+	byMail    map[string]int
+	byAccount map[string]int
 }
 
 func (r *UserRepo) Init() {
@@ -49,8 +49,8 @@ func (r *UserRepo) Init() {
 	defer r.Unlock()
 
 	r.users = make(map[int]*User, 1024)
-	r.byMail = make(map[string]*User, 1024)
-	r.byAccount = make(map[string]*User, 1024)
+	r.byMail = make(map[string]int, 1024)
+	r.byAccount = make(map[string]int, 1024)
 	rows, err := db.Query(`SELECT id, account_name, nick_name, email FROM users`)
 	if err != nil && err != sql.ErrNoRows {
 		log.Fatal(err)
@@ -62,8 +62,8 @@ func (r *UserRepo) Init() {
 			log.Fatal(err)
 		}
 		r.users[u.ID] = &u
-		r.byMail[u.Email] = &u
-		r.byAccount[u.AccountName] = &u
+		r.byMail[u.Email] = u.ID
+		r.byAccount[u.AccountName] = u.ID
 	}
 	rows.Close()
 }
@@ -76,15 +76,23 @@ func (r *UserRepo) Get(id int) *User {
 }
 
 func (r *UserRepo) GetByMail(email string) *User {
+	var u *User
 	r.RLock()
-	u := r.byMail[email]
+	uid := r.byMail[email]
+	if uid != 0 {
+		u = r.users[uid]
+	}
 	r.RUnlock()
 	return u
 }
 
 func (r *UserRepo) GetByAccount(account string) *User {
+	var u *User
 	r.RLock()
-	u := r.byAccount[account]
+	uid := r.byAccount[account]
+	if uid != 0 {
+		u = r.users[uid]
+	}
 	r.RUnlock()
 	return u
 }
@@ -596,9 +604,9 @@ func ListEntries(w http.ResponseWriter, r *http.Request) {
 
 	render(w, r, http.StatusOK, "entries.html", struct {
 		Owner   *User
-		Entries []Entry
 		Myself  bool
-	}{owner, entries, currentUser.ID == owner.ID})
+		Entries template.HTML
+	}{owner, currentUser.ID == owner.ID, renderEntriesList(entries)})
 }
 
 func GetEntry(w http.ResponseWriter, r *http.Request) {
@@ -704,11 +712,12 @@ func GetFootprints(w http.ResponseWriter, r *http.Request) {
 	if !authenticated(w, r) {
 		return
 	}
-
 	user := getCurrentUser(w, r)
 	footprints := footPrintCache.Get(user.ID)
-	render(w, r, http.StatusOK, "footprints.html", struct{ Footprints []Footprint }{footprints[:50]})
+	render(w, r, http.StatusOK, "footprints.html",
+		struct{ Footprints []Footprint }{footprints[:50]})
 }
+
 func GetFriends(w http.ResponseWriter, r *http.Request) {
 	if !authenticated(w, r) {
 		return
@@ -903,5 +912,33 @@ func renderCommentsOfFriends(comments []Comment) template.HTML {
 			template.HTMLEscapeString(comment), c.CreatedAt.Format("2006-01-02 15:04:05"))
 	}
 	buf.WriteString(`</div></div>`)
+	return template.HTML(buf.String())
+}
+
+func renderEntriesList(entries []Entry) template.HTML {
+	buf := &bytes.Buffer{}
+	buf.WriteString(`
+<div class="row" id="entries">`)
+	for _, e := range entries {
+		title := template.HTMLEscapeString(e.Title)
+		content := template.HTMLEscapeString(e.Content)
+		content = strings.Replace(content, "\n", "<br />\n", 0)
+		fmt.Fprintf(buf, `
+    <div class="panel panel-primary entry">
+        <div class="entry-title">タイトル: <a href="/diary/entry/%d">%s</a></div>
+        <div class="entry-content">
+%s
+        </div>
+	`, e.ID, title, content)
+		if e.Private {
+			buf.WriteString(`<div class="text-danger entry-private">範囲: 友だち限定公開</div>`)
+		}
+		fmt.Fprintf(buf, `
+        <div class="entry-created-at">更新日時: %s</div>
+        <div class="entry-comments">コメント: %d件</div>
+    </div>`,
+			e.CreatedAt.Format("2006-01-02 15:04:05"), e.NumComments)
+	}
+	buf.WriteString(`</div>`)
 	return template.HTML(buf.String())
 }

@@ -1,4 +1,14 @@
-{{ template "header.html" }}
+<!DOCTYPE html>
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html" charset="utf-8">
+<link rel="stylesheet" href="/css/bootstrap.min.css">
+<title>ISUxi</title>
+</head>
+
+<body class="container">
+<h1 class="jumbotron"><a href="/">ISUxiへようこそ!</a></h1>
+
 <h2>{{ .Owner.NickName }}さんの日記</h2>
 {{ if .Myself }}
 <div class="row" id="entry-post-form">
@@ -23,21 +33,6 @@
 </div>
 {{ end }}
 
-<div class="row" id="entries">
-    {{ range .Entries }}
-    <div class="panel panel-primary entry">
-        <div class="entry-title">タイトル: <a href="/diary/entry/{{ .ID }}">{{ .Title }}</a></div>
-        <div class="entry-content">
-            {{ range (split .Content "\n") }}
-            {{ . }}<br />
-            {{ end }}
-        </div>
-        {{ if .Private }}<div class="text-danger entry-private">範囲: 友だち限定公開</div>{{ end }}
-        <div class="entry-created-at">更新日時: {{ .CreatedAt.Format "2006-01-02 15:04:05" }}</div>
-        <div class="entry-comments">コメント: {{ .NumComments }}件</div>
-    </div>
-    {{ end }}
-</div>
-
+{{ .Entries }}
 </body>
 </html>
