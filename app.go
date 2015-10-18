@@ -109,6 +109,45 @@ type Profile struct {
 	UpdatedAt time.Time
 }
 
+type ProfileRepo struct {
+	sync.Mutex
+	profiles map[int]*Profile
+}
+
+func (r *ProfileRepo) Get(id int) *Profile {
+	r.Lock()
+	defer r.Unlock()
+	return r.profiles[id]
+}
+
+func (r *ProfileRepo) Update(id int, prof *Profile) {
+	r.Lock()
+	defer r.Unlock()
+	r.profiles[id] = prof
+}
+
+func (r *ProfileRepo) Init() {
+	r.Lock()
+	defer r.Unlock()
+	r.profiles = make(map[int]*Profile, 1000)
+
+	rows, err := db.Query(`SELECT * FROM profiles`)
+	if err != nil {
+		panic(err)
+	}
+	for rows.Next() {
+		prof := Profile{}
+		err := rows.Scan(&prof.UserID, &prof.FirstName, &prof.LastName, &prof.Sex, &prof.Birthday, &prof.Pref, &prof.UpdatedAt)
+		if err != nil {
+			panic(err)
+		}
+		r.profiles[prof.UserID] = &prof
+	}
+	rows.Close()
+}
+
+var profileRepo = &ProfileRepo{}
+
 type Entry struct {
 	ID          int
 	UserID      int
@@ -264,6 +303,19 @@ func authenticationFailed(w http.ResponseWriter, r *http.Request) {
 	render(w, r, http.StatusUnauthorized, "login.html", struct{ Message string }{"ログインに失敗しました"})
 }
 
+func getProfile(id int) *Profile {
+	prof := Profile{}
+	row := db.QueryRow(`SELECT * FROM profiles WHERE user_id = ?`, id)
+	err := row.Scan(&prof.UserID, &prof.FirstName, &prof.LastName, &prof.Sex, &prof.Birthday, &prof.Pref, &prof.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		panic(err)
+	}
+	return &prof
+}
+
 func authenticate(w http.ResponseWriter, r *http.Request, email, passwd string) {
 	u := userRepo.GetByMail(email)
 	if u == nil {
@@ -405,18 +457,13 @@ func GetLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 func GetIndex(w http.ResponseWriter, r *http.Request) {
-	if !authenticated(w, r) {
+	user := getCurrentUser(w, r)
+	if user == nil {
+		http.Redirect(w, r, "/login", http.StatusFound)
 		return
 	}
 
-	user := getCurrentUser(w, r)
-
-	prof := Profile{}
-	row := db.QueryRow(`SELECT * FROM profiles WHERE user_id = ?`, user.ID)
-	err := row.Scan(&prof.UserID, &prof.FirstName, &prof.LastName, &prof.Sex, &prof.Birthday, &prof.Pref, &prof.UpdatedAt)
-	if err != sql.ErrNoRows {
-		checkErr(err)
-	}
+	prof := profileRepo.Get(user.ID)
 
 	rows, err := db.Query(`SELECT id, title FROM entries2 WHERE user_id = ? ORDER BY created_at LIMIT 5`, user.ID)
 	if err != sql.ErrNoRows {
@@ -482,7 +529,7 @@ LIMIT 10`, user.ID)
 
 	render(w, r, http.StatusOK, "index.html", struct {
 		User              User
-		Profile           Profile
+		Profile           *Profile
 		Entries           []Entry
 		CommentsForMe     []Comment
 		FriendEntries     template.HTML
@@ -503,12 +550,8 @@ func GetProfile(w http.ResponseWriter, r *http.Request) {
 
 	account := mux.Vars(r)["account_name"]
 	owner := getUserFromAccount(w, account)
-	row := db.QueryRow(`SELECT * FROM profiles WHERE user_id = ?`, owner.ID)
-	prof := Profile{}
-	err := row.Scan(&prof.UserID, &prof.FirstName, &prof.LastName, &prof.Sex, &prof.Birthday, &prof.Pref, &prof.UpdatedAt)
-	if err != sql.ErrNoRows {
-		checkErr(err)
-	}
+	prof := profileRepo.Get(owner.ID)
+
 	var query string
 	if permitted2(currentUser.ID, owner.ID) {
 		query = `SELECT * FROM entries2 WHERE user_id = ? ORDER BY created_at LIMIT 5`
@@ -534,7 +577,7 @@ func GetProfile(w http.ResponseWriter, r *http.Request) {
 
 	render(w, r, http.StatusOK, "profile.html", struct {
 		Owner       *User
-		Profile     Profile
+		Profile     *Profile
 		Entries     []Entry
 		Private     bool
 		CurrentUser *User
@@ -564,7 +607,16 @@ WHERE user_id = ?`
 	pref := r.FormValue("pref")
 	_, err := db.Exec(query, firstName, lastName, sex, birth, pref, user.ID)
 	checkErr(err)
+
+	prof := Profile{}
+	row := db.QueryRow("SELECT * FROM profiles WHERE user_id=?", user.ID)
+	err = row.Scan(&prof.UserID, &prof.FirstName, &prof.LastName, &prof.Sex, &prof.Birthday, &prof.Pref, &prof.UpdatedAt)
+	if err != nil {
+		panic(err)
+	}
+
 	// TODO should escape the account name?
+	profileRepo.Update(user.ID, &prof)
 	http.Redirect(w, r, "/profile/"+account, http.StatusSeeOther)
 }
 
@@ -776,6 +828,7 @@ func GetInitialize(w http.ResponseWriter, r *http.Request) {
 	userRepo.Init()
 	footPrintCache.Reset()
 	entryCache.Init()
+	profileRepo.Init()
 	//db.Exec("SELECT title FROM entries2 ORDER BY id desc LIMIT 10000")
 }
 
@@ -837,6 +890,7 @@ func main() {
 	commentCache.Init()
 	userRepo.Init()
 	entryCache.Init()
+	profileRepo.Init()
 	go http.ListenAndServe(":3000", nil)
 	go http.ListenAndServe(":8080", r)
 	os.Remove(UnixPath)
